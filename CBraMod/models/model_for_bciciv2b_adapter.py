@@ -12,9 +12,10 @@ class Model(nn.Module):
             dim_feedforward=800, seq_len=30,
             n_layer=12, nhead=8
         )
+        self.adapter_channels = param.adapter_channels if param.use_adapter else 3
         if param.use_adapter:
             self.adapter = nn.Sequential(
-                nn.Conv2d(in_channels=3, out_channels=3, kernel_size=1),
+                nn.Conv2d(in_channels=3, out_channels=self.adapter_channels, kernel_size=1),
                 nn.BatchNorm2d(3),
             )
         self.use_adapter = param.use_adapter
@@ -32,12 +33,12 @@ class Model(nn.Module):
         elif param.classifier == 'all_patch_reps_onelayer':
             self.classifier = nn.Sequential(
                 Rearrange('b c s d -> b (c s d)'),
-                nn.Linear(3 * 4 * 200, param.num_of_classes),
+                nn.Linear(self.adapter_channels * 4 * 200, param.num_of_classes),
             )
         elif param.classifier == 'all_patch_reps_twolayer':
             self.classifier = nn.Sequential(
                 Rearrange('b c s d -> b (c s d)'),
-                nn.Linear(3 * 4 * 200, 200),
+                nn.Linear(self.adapter_channels * 4 * 200, 200),
                 nn.ELU(),
                 nn.Dropout(param.dropout),
                 nn.Linear(200, param.num_of_classes),
@@ -45,7 +46,7 @@ class Model(nn.Module):
         elif param.classifier == 'all_patch_reps':
             self.classifier = nn.Sequential(
                 Rearrange('b c s d -> b (c s d)'),
-                nn.Linear(3 * 4 * 200, 4 * 200),
+                nn.Linear(self.adapter_channels * 4 * 200, 4 * 200),
                 nn.ELU(),
                 nn.Dropout(param.dropout),
                 nn.Linear(4 * 200, 200),
@@ -65,7 +66,7 @@ class Model(nn.Module):
                 
                 # Trộn thông tin giữa các kênh
                 Rearrange('b c d -> b (c d)'), # (b, 22 * 16 = 352)
-                nn.Linear(3 * 16, 16),
+                nn.Linear(self.adapter_channels * 16, 16),
                 nn.ELU(),
                 nn.Dropout(param.dropout),
                 

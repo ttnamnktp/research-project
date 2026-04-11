@@ -29,6 +29,8 @@ def main():
                              'all_patch_reps_onelayer, avgpooling_patch_reps]')
     parser.add_argument('--use_adapter', type=lambda x: x.lower() == 'true', default=False,
                         help='True, False')
+    parser.add_argument('--adapter_channels', type=int, default=3,
+                        help='12,22,32')
     # all_patch_reps: use all patch features with a three-layer classifier;
     # all_patch_reps_twolayer: use all patch features with a two-layer classifier;
     # all_patch_reps_onelayer: use all patch features with a one-layer classifier;
