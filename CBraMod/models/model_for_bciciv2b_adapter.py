@@ -16,7 +16,7 @@ class Model(nn.Module):
         if param.use_adapter:
             self.adapter = nn.Sequential(
                 nn.Conv2d(in_channels=3, out_channels=self.adapter_channels, kernel_size=1),
-                nn.BatchNorm2d(3),
+                nn.BatchNorm2d(self.adapter_channels),
             )
         self.use_adapter = param.use_adapter
         if param.use_pretrained_weights:
