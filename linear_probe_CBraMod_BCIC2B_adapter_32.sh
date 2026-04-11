@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=linear_probe_CBraMod_BCIC2B_adapter
+#SBATCH --job-name=linear_probe_CBraMod_BCIC2B_adapter_32
 #SBATCH --output=bash_logs/%x_%j.out
 #SBATCH --error=bash_logs/%x_%j.err
 #SBATCH --time=24:00:00          # hh:mm:ss
