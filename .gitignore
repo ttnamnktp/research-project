@@ -1,0 +1,11 @@
+bash_logs/
+BCICIV_2a_gdf_old/
+logs/
+logs_old/
+BCICIV_2a_gdf/
+BCICIV_2b_gdf/
+datasets/
+CBraMod/downstream_checkpoints/
+CBraMod/pretrained_weights
+EEGPT/checkpoint_
+*/__pycache__/*
