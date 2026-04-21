@@ -27,21 +27,16 @@ from Modules.models.EEGPT_mcae import EEGTransformer
 from Modules.Network.utils import Conv1dWithConstraint, LinearWithConstraint
 from utils_eval import get_metrics
 
-use_channels_names = [      
-               'FP1', 'FP2',
-        'F7', 'F3', 'FZ', 'F4', 'F8',
-        'T7', 'C3', 'CZ', 'C4', 'T8',
-        'P7', 'P3', 'PZ', 'P4', 'P8',
-                'O1', 'O2' ]
-
 class LitEEGPTCausal(pl.LightningModule):
 
     def __init__(self, load_path="/home/infres/ttran-25/project/EEGPT/checkpoint_/eegpt_mcae_58chs_4s_large4E.ckpt"):
         super().__init__()    
-        self.chans_num = 19
+        self.chans_num = 7
         # init model
+        use_channels_names = [ 'C5', 'C3', 'C1', 'CZ', 'C2', 'C4', 'C6' ]
+        
         target_encoder = EEGTransformer(
-            img_size=[19, 1024],
+            img_size=[7, 1024],
             patch_size=32*2,
             embed_num=4,
             embed_dim=512,
@@ -67,31 +62,35 @@ class LitEEGPTCausal(pl.LightningModule):
                 target_encoder_stat[k[15:]]=v
                 
         self.target_encoder.load_state_dict(target_encoder_stat)
-        self.chan_conv       = Conv1dWithConstraint(22, self.chans_num, 1, max_norm=1)
+
+        self.chan_conv       = Conv1dWithConstraint(3, self.chans_num, 1, max_norm=1)
+        
         self.linear_probe1   =   LinearWithConstraint(16*4*512, 64, max_norm=1)
         self.linear_probe2   =   LinearWithConstraint(64, 4, max_norm=0.25)
         
         self.drop           = torch.nn.Dropout(p=0.50)
         self.act = nn.GELU()
-        
+
         self.loss_fn        = torch.nn.CrossEntropyLoss()
         self.running_scores = {"train":[], "valid":[], "test":[]}
         self.is_sanity=True
         
     def forward(self, x):
         
+        x = x/10
+
         x = self.chan_conv(x)
         
         # self.target_encoder.eval() # comment this to 🔥 finetune the pre-trained models
         
-        z = self.target_encoder(x, self.chans_id.to(x)) # [B, 16, 4, 512]
+        z = self.target_encoder(x, self.chans_id.to(x))
 
         h = z.flatten(1)
         
         h = self.linear_probe1(self.drop(h))
-
+        
         h = self.act(h)
-                
+
         h = self.linear_probe2(h)
         
         return x, h
@@ -160,6 +159,7 @@ class LitEEGPTCausal(pl.LightningModule):
     def configure_optimizers(self):
         
         optimizer = torch.optim.AdamW(
+            list(self.target_encoder.parameters()) +   # 🔥 finetune the pre-trained models
             list(self.chan_conv.parameters())+
             list(self.linear_probe1.parameters())+
             list(self.linear_probe2.parameters()),
@@ -189,7 +189,7 @@ import math
 def main():
     
     # load configs
-    data_path = "/home/infres/ttran-25/project/datasets/downstream/Data/BCIC_2a_0_38HZ"
+    data_path = "/home/infres/ttran-25/project/datasets/downstream/Data/BCIC_2b_0_38HZ"
     # used seed: 7
     seed_torch(8)
     for i in range(1,10):
@@ -223,8 +223,8 @@ def main():
                             max_epochs=max_epochs, 
                             callbacks=callbacks,
                             enable_checkpointing=False,
-                            logger=[pl_loggers.TensorBoardLogger('./logs/', name="linear_probe_EEGPT_BCIC2A_flatten_linear_tb", version=f"subject{i}"), 
-                                    pl_loggers.CSVLogger('./logs/', name="linear_probe_EEGPT_BCIC2A_flatten_linear_csv")])
+                            logger=[pl_loggers.TensorBoardLogger('./logs/', name="finetune_EEGPT_BCIC2B_flatten_linear_tb", version=f"subject{i}"), 
+                                    pl_loggers.CSVLogger('./logs/', name="finetune_EEGPT_BCIC2B_flatten_linear_csv")])
 
         trainer.fit(model, train_loader, test_loader, ckpt_path='last')
 

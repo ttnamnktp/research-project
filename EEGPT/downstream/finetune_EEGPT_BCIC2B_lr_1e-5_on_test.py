@@ -11,6 +11,8 @@ import os
 import tqdm
 from pytorch_lightning import loggers as pl_loggers
 import torch.nn.functional as F
+import pandas as pd
+
 def seed_torch(seed=1029):
 	random.seed(seed)
 	os.environ['PYTHONHASHSEED'] = str(seed) # 为了禁止hash随机化，使得实验可复现
@@ -27,21 +29,16 @@ from Modules.models.EEGPT_mcae import EEGTransformer
 from Modules.Network.utils import Conv1dWithConstraint, LinearWithConstraint
 from utils_eval import get_metrics
 
-use_channels_names = [      
-               'FP1', 'FP2',
-        'F7', 'F3', 'FZ', 'F4', 'F8',
-        'T7', 'C3', 'CZ', 'C4', 'T8',
-        'P7', 'P3', 'PZ', 'P4', 'P8',
-                'O1', 'O2' ]
-
 class LitEEGPTCausal(pl.LightningModule):
 
     def __init__(self, load_path="/home/infres/ttran-25/project/EEGPT/checkpoint_/eegpt_mcae_58chs_4s_large4E.ckpt"):
         super().__init__()    
-        self.chans_num = 19
+        self.chans_num = 7
         # init model
+        use_channels_names = [ 'C5', 'C3', 'C1', 'CZ', 'C2', 'C4', 'C6' ]
+        
         target_encoder = EEGTransformer(
-            img_size=[19, 1024],
+            img_size=[7, 1024],
             patch_size=32*2,
             embed_num=4,
             embed_dim=512,
@@ -67,12 +64,13 @@ class LitEEGPTCausal(pl.LightningModule):
                 target_encoder_stat[k[15:]]=v
                 
         self.target_encoder.load_state_dict(target_encoder_stat)
-        self.chan_conv       = Conv1dWithConstraint(22, self.chans_num, 1, max_norm=1)
-        self.linear_probe1   =   LinearWithConstraint(16*4*512, 64, max_norm=1)
-        self.linear_probe2   =   LinearWithConstraint(64, 4, max_norm=0.25)
+
+        self.chan_conv       = Conv1dWithConstraint(3, self.chans_num, 1, max_norm=1)
+        
+        self.linear_probe1   =   LinearWithConstraint(2048, 16, max_norm=1)
+        self.linear_probe2   =   LinearWithConstraint(16*16, 4, max_norm=0.25)
         
         self.drop           = torch.nn.Dropout(p=0.50)
-        self.act = nn.GELU()
         
         self.loss_fn        = torch.nn.CrossEntropyLoss()
         self.running_scores = {"train":[], "valid":[], "test":[]}
@@ -80,18 +78,20 @@ class LitEEGPTCausal(pl.LightningModule):
         
     def forward(self, x):
         
+        x = x/10
+
         x = self.chan_conv(x)
         
         # self.target_encoder.eval() # comment this to 🔥 finetune the pre-trained models
         
-        z = self.target_encoder(x, self.chans_id.to(x)) # [B, 16, 4, 512]
-
-        h = z.flatten(1)
+        z = self.target_encoder(x, self.chans_id.to(x))
+        
+        h = z.flatten(2)
         
         h = self.linear_probe1(self.drop(h))
-
-        h = self.act(h)
-                
+        
+        h = h.flatten(1)
+        
         h = self.linear_probe2(h)
         
         return x, h
@@ -100,13 +100,14 @@ class LitEEGPTCausal(pl.LightningModule):
         # training_step defined the train loop.
         # It is independent of forward
         x, y = batch
-        y = F.one_hot(y.long(), num_classes=4).float()
+        # y = F.one_hot(y.long(), num_classes=4).float()
         
-        label = y
+        label = y.long()
         
         x, logit = self.forward(x)
         loss = self.loss_fn(logit, label)
-        accuracy = ((torch.argmax(logit, dim=-1)==torch.argmax(label, dim=-1))*1.0).mean()
+        accuracy = (torch.argmax(logit, dim=1) == label).float().mean()
+
         # Logging to TensorBoard by default
         self.log('train_loss', loss, on_epoch=True, on_step=False)
         self.log('train_acc', accuracy, on_epoch=True, on_step=False)
@@ -156,29 +157,74 @@ class LitEEGPTCausal(pl.LightningModule):
         
         self.running_scores["valid"].append((label.clone().detach().cpu(), logit.clone().detach().cpu()))
         return loss
+
+    def on_test_epoch_start(self):
+        self.running_scores["test"] = []
+
+    def test_step(self, batch, batch_idx):
+        x, y = batch
+        label = y.long()
+
+        _, logit = self.forward(x)
+
+        loss = self.loss_fn(logit, label)
+        acc = ((torch.argmax(logit, dim=-1) == label) * 1.0).mean()
+
+        self.log("test_loss", loss, on_epoch=True)
+        self.log("test_acc", acc, on_epoch=True)
+
+        self.running_scores["test"].append(
+            (label.detach().cpu(), logit.detach().cpu())
+        )
+
+    def on_test_epoch_end(self):
+
+        label, y_score = [], []
+
+        for x, y in self.running_scores["test"]:
+            label.append(x)
+            y_score.append(y)
+
+        label = torch.cat(label, dim=0)
+        y_score = torch.cat(y_score, dim=0)
+
+        metrics = [
+            "accuracy",
+            "balanced_accuracy",
+            "cohen_kappa",
+            "f1_weighted",
+            "f1_macro",
+            "f1_micro"
+        ]
+
+        results = get_metrics(
+            y_score.numpy(),
+            label.numpy(),
+            metrics,
+            False
+        )
+
+        for key, value in results.items():
+            self.log("test_" + key, value)
     
     def configure_optimizers(self):
-        
-        optimizer = torch.optim.AdamW(
-            list(self.chan_conv.parameters())+
-            list(self.linear_probe1.parameters())+
-            list(self.linear_probe2.parameters()),
-            weight_decay=0.01)#
-        
-        lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=max_lr, steps_per_epoch=steps_per_epoch, epochs=max_epochs, pct_start=0.2)
-        lr_dict = {
-            'scheduler': lr_scheduler, # The LR scheduler instance (required)
-            # The unit of the scheduler's step size, could also be 'step'
-            'interval': 'step',
-            'frequency': 1, # The frequency of the scheduler
-            'monitor': 'val_loss', # Metric for `ReduceLROnPlateau` to monitor
-            'strict': True, # Whether to crash the training if `monitor` is not found
-            'name': None, # Custom name for `LearningRateMonitor` to use
-        }
-      
-        return (
-            {'optimizer': optimizer, 'lr_scheduler': lr_dict},
-        )
+    
+        optimizer = torch.optim.AdamW([
+            {"params": self.target_encoder.parameters(), "lr": 1e-5},
+            {"params": self.chan_conv.parameters(), "lr": 1e-3},
+            {"params": self.linear_probe1.parameters(), "lr": 1e-3},
+            {"params": self.linear_probe2.parameters(), "lr": 1e-3},
+        ], weight_decay=1e-4)
+
+        lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=[1e-5, 1e-3, 1e-3, 1e-3], steps_per_epoch=steps_per_epoch, epochs=max_epochs, pct_start=0.1)
+
+        return ({
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': lr_scheduler,
+                'interval': 'step'
+            }
+        })
         
 # load configs
 # -- LOSO 
@@ -189,9 +235,11 @@ import math
 def main():
     
     # load configs
-    data_path = "/home/infres/ttran-25/project/datasets/downstream/Data/BCIC_2a_0_38HZ"
+    data_path = "/home/infres/ttran-25/project/datasets/downstream/Data/BCIC_2b_0_38HZ"
     # used seed: 7
     seed_torch(8)
+    all_results = []
+
     for i in range(1,10):
         all_subjects = [i]
         all_datas = []
@@ -199,7 +247,6 @@ def main():
         
         global max_epochs
         global steps_per_epoch
-        global max_lr
 
         batch_size=64
 
@@ -208,26 +255,43 @@ def main():
         test_loader  = torch.utils.data.DataLoader(test_dataset,  batch_size=batch_size, num_workers=0, shuffle=False)
         
         max_epochs = 100
+        # max_epochs=50
 
         steps_per_epoch = math.ceil(len(train_loader) )
-        max_lr = 4e-4
+        # steps_per_epoch = 100
 
         # init model
         model = LitEEGPTCausal()
 
-        lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
-        callbacks = [lr_monitor]
+        checkpoint_callback = pl.callbacks.ModelCheckpoint(
+            dirpath=f"./EEGPT/ds_checkpoints/finetune_EEGPT_BCIC2B_lr_1e-5_on_test/subject{i}",
+            monitor="valid_cohen_kappa",
+            mode="max",
+            save_top_k=1,
+            filename="best-{epoch}-{valid_cohen_kappa:.4f}"
+        )
+
+        lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='step')
         
         trainer = pl.Trainer(accelerator='cuda',
                             devices=[0,], 
                             max_epochs=max_epochs, 
-                            callbacks=callbacks,
-                            enable_checkpointing=False,
-                            logger=[pl_loggers.TensorBoardLogger('./logs/', name="linear_probe_EEGPT_BCIC2A_flatten_linear_tb", version=f"subject{i}"), 
-                                    pl_loggers.CSVLogger('./logs/', name="linear_probe_EEGPT_BCIC2A_flatten_linear_csv")])
+                            callbacks=[lr_monitor, checkpoint_callback],
+                            logger=[pl_loggers.TensorBoardLogger('./logs/', name="finetune_EEGPT_BCIC2B_lr_1e-5_on_test_tb", version=f"subject{i}"), 
+                                    pl_loggers.CSVLogger('./logs/', name="finetune_EEGPT_BCIC2B_lr_1e-5_on_test_csv", version=f"subject{i}")])
 
-        trainer.fit(model, train_loader, test_loader, ckpt_path='last')
+        # trainer.fit(model, train_loader, test_loader, ckpt_path='last')
+        trainer.fit(model, train_loader, valid_loader)
+        result = trainer.test(
+            model=None,
+            dataloaders=test_loader,
+            ckpt_path="best"
+        )[0]
+        
+        print(f"Result: {result}")
+        result["subject"] = i
+        all_results.append(result)
+
+    pd.DataFrame(all_results).to_csv("loso_result.csv", index=False)
 
 main()
-# model = LitEEGPTCausal()
-# print(model)

@@ -9,3 +9,4 @@ CBraMod/downstream_checkpoints/
 CBraMod/pretrained_weights
 EEGPT/checkpoint_
 */__pycache__/*
+EEGPT/ds_checkpoints/

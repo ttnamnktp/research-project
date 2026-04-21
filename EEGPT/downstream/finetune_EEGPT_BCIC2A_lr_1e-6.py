@@ -68,11 +68,10 @@ class LitEEGPTCausal(pl.LightningModule):
                 
         self.target_encoder.load_state_dict(target_encoder_stat)
         self.chan_conv       = Conv1dWithConstraint(22, self.chans_num, 1, max_norm=1)
-        self.linear_probe1   =   LinearWithConstraint(16*4*512, 64, max_norm=1)
-        self.linear_probe2   =   LinearWithConstraint(64, 4, max_norm=0.25)
+        self.linear_probe1   =   LinearWithConstraint(2048, 16, max_norm=1)
+        self.linear_probe2   =   LinearWithConstraint(16*16, 4, max_norm=0.25)
         
         self.drop           = torch.nn.Dropout(p=0.50)
-        self.act = nn.GELU()
         
         self.loss_fn        = torch.nn.CrossEntropyLoss()
         self.running_scores = {"train":[], "valid":[], "test":[]}
@@ -81,17 +80,15 @@ class LitEEGPTCausal(pl.LightningModule):
     def forward(self, x):
         
         x = self.chan_conv(x)
+                
+        z = self.target_encoder(x, self.chans_id.to(x))
         
-        # self.target_encoder.eval() # comment this to 🔥 finetune the pre-trained models
-        
-        z = self.target_encoder(x, self.chans_id.to(x)) # [B, 16, 4, 512]
-
-        h = z.flatten(1)
+        h = z.flatten(2)
         
         h = self.linear_probe1(self.drop(h))
-
-        h = self.act(h)
-                
+        
+        h = h.flatten(1)
+        
         h = self.linear_probe2(h)
         
         return x, h
@@ -158,27 +155,23 @@ class LitEEGPTCausal(pl.LightningModule):
         return loss
     
     def configure_optimizers(self):
-        
-        optimizer = torch.optim.AdamW(
-            list(self.chan_conv.parameters())+
-            list(self.linear_probe1.parameters())+
-            list(self.linear_probe2.parameters()),
-            weight_decay=0.01)#
-        
-        lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=max_lr, steps_per_epoch=steps_per_epoch, epochs=max_epochs, pct_start=0.2)
-        lr_dict = {
-            'scheduler': lr_scheduler, # The LR scheduler instance (required)
-            # The unit of the scheduler's step size, could also be 'step'
-            'interval': 'step',
-            'frequency': 1, # The frequency of the scheduler
-            'monitor': 'val_loss', # Metric for `ReduceLROnPlateau` to monitor
-            'strict': True, # Whether to crash the training if `monitor` is not found
-            'name': None, # Custom name for `LearningRateMonitor` to use
-        }
-      
-        return (
-            {'optimizer': optimizer, 'lr_scheduler': lr_dict},
-        )
+    
+        optimizer = torch.optim.AdamW([
+            {"params": self.target_encoder.parameters(), "lr": 1e-6},
+            {"params": self.chan_conv.parameters(), "lr": 1e-3},
+            {"params": self.linear_probe1.parameters(), "lr": 1e-3},
+            {"params": self.linear_probe2.parameters(), "lr": 1e-3},
+        ], weight_decay=1e-4)
+
+        lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=[1e-6, 1e-3, 1e-3, 1e-3], steps_per_epoch=steps_per_epoch, epochs=max_epochs, pct_start=0.1)
+
+        return ({
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': lr_scheduler,
+                'interval': 'step'
+            }
+        })
         
 # load configs
 # -- LOSO 
@@ -199,7 +192,6 @@ def main():
         
         global max_epochs
         global steps_per_epoch
-        global max_lr
 
         batch_size=64
 
@@ -208,14 +200,15 @@ def main():
         test_loader  = torch.utils.data.DataLoader(test_dataset,  batch_size=batch_size, num_workers=0, shuffle=False)
         
         max_epochs = 100
+        # max_epochs=50
 
         steps_per_epoch = math.ceil(len(train_loader) )
-        max_lr = 4e-4
+        # steps_per_epoch = 100
 
         # init model
         model = LitEEGPTCausal()
 
-        lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
+        lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='step')
         callbacks = [lr_monitor]
         
         trainer = pl.Trainer(accelerator='cuda',
@@ -223,11 +216,9 @@ def main():
                             max_epochs=max_epochs, 
                             callbacks=callbacks,
                             enable_checkpointing=False,
-                            logger=[pl_loggers.TensorBoardLogger('./logs/', name="linear_probe_EEGPT_BCIC2A_flatten_linear_tb", version=f"subject{i}"), 
-                                    pl_loggers.CSVLogger('./logs/', name="linear_probe_EEGPT_BCIC2A_flatten_linear_csv")])
+                            logger=[pl_loggers.TensorBoardLogger('./logs/', name="finetune_EEGPT_BCIC2A_lr_1e-6_tb", version=f"subject{i}"), 
+                                    pl_loggers.CSVLogger('./logs/', name="finetune_EEGPT_BCIC2A_lr_1e-6_csv")])
 
         trainer.fit(model, train_loader, test_loader, ckpt_path='last')
 
 main()
-# model = LitEEGPTCausal()
-# print(model)

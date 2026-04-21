@@ -72,6 +72,7 @@ class LitEEGPTCausal(pl.LightningModule):
         self.linear_probe2   =   LinearWithConstraint(64, 4, max_norm=0.25)
         
         self.drop           = torch.nn.Dropout(p=0.50)
+        self.act = nn.GELU()
         
         self.loss_fn        = torch.nn.CrossEntropyLoss()
         self.running_scores = {"train":[], "valid":[], "test":[]}
@@ -88,7 +89,9 @@ class LitEEGPTCausal(pl.LightningModule):
         h = z.flatten(1)
         
         h = self.linear_probe1(self.drop(h))
-                
+        
+        h = self.act(h)
+
         h = self.linear_probe2(h)
         
         return x, h

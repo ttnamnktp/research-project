@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=finetune_EEGPT_BCIC2A_flatten_linear_3
+#SBATCH --job-name=finetune_EEGPT_BCIC2B_lr_1e-5_on_test
 #SBATCH --output=bash_logs/%x_%j.out
 #SBATCH --error=bash_logs/%x_%j.err
 #SBATCH --time=24:00:00          # hh:mm:ss
@@ -25,4 +25,4 @@ nvidia-smi
 # ======================
 # chạy training
 # ======================
-srun python -u EEGPT/downstream/finetune_EEGPT_BCIC2A_flatten_linear_3.py
+srun python -u EEGPT/downstream/finetune_EEGPT_BCIC2B_lr_1e-5_on_test.py

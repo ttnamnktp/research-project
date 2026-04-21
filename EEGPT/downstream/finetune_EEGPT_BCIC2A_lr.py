@@ -158,23 +158,18 @@ class LitEEGPTCausal(pl.LightningModule):
     
         optimizer = torch.optim.AdamW([
             {"params": self.target_encoder.parameters(), "lr": 1e-5},
-            {"params": self.chan_conv.parameters(), "lr": 1e-4},
-            {"params": self.linear_probe1.parameters(), "lr": 1e-4},
-            {"params": self.linear_probe2.parameters(), "lr": 1e-4},
-        ], weight_decay=0.01)
-        
-        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=self.trainer.max_epochs,  
-            eta_min=1e-6
-        )
+            {"params": self.chan_conv.parameters(), "lr": 1e-3},
+            {"params": self.linear_probe1.parameters(), "lr": 1e-3},
+            {"params": self.linear_probe2.parameters(), "lr": 1e-3},
+        ], weight_decay=1e-4)
+
+        lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=[1e-5, 1e-3, 1e-3, 1e-3], steps_per_epoch=steps_per_epoch, epochs=max_epochs, pct_start=0.2)
 
         return ({
             'optimizer': optimizer,
             'lr_scheduler': {
                 'scheduler': lr_scheduler,
-                'interval': 'epoch', 
-                'frequency': 1,
+                'interval': 'step'
             }
         })
         
@@ -205,13 +200,15 @@ def main():
         test_loader  = torch.utils.data.DataLoader(test_dataset,  batch_size=batch_size, num_workers=0, shuffle=False)
         
         max_epochs = 100
+        # max_epochs=50
 
         steps_per_epoch = math.ceil(len(train_loader) )
+        # steps_per_epoch = 100
 
         # init model
         model = LitEEGPTCausal()
 
-        lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
+        lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='step')
         callbacks = [lr_monitor]
         
         trainer = pl.Trainer(accelerator='cuda',
